@@ -1,0 +1,248 @@
+---
+title: "Final Project Source Code"
+author: "Luc Rieffel, Michelle Zhang, Zak Usac"
+subtitle: MGSC 310
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+
+
+library(knitr)
+
+# As long as you are working in a Rstudio Project file, you shouldn't need to 'hard code' directories like this 
+# change to your own working directory
+#knitr::opts_knit$set(root.dir = 'C:/Users/doosti/Desktop/MGSC_310')
+
+# set seed to your own favorite number
+set.seed(310)
+options(width=70)
+# if you want to prevent scientific format for numbers use this:
+options(scipen=99)
+
+# general rchunk code options
+opts_chunk$set(tidy.opts=list(width.wrap=50),tidy=FALSE, size = "vsmall")
+opts_chunk$set(message = FALSE,
+               warning = FALSE,
+               cache = TRUE,
+               autodep = TRUE,
+               cache.comments = FALSE,
+               collapse = TRUE,
+               fig.width = 5,  
+               fig.height = 4,
+               fig.align='center')
+
+```
+
+```{r setup_2}
+
+# load all your libraries here
+library(rsample)
+library(knitr)
+library(dplyr)
+library(tidyverse)
+library(caret)
+library(forcats)
+library(randomForest)
+library(randomForestExplainer)
+# note, do not run install.packages() inside a code chunk. install them in the console outside of a code chunk. 
+
+```
+
+
+## Summary Statistics
+
+
+```{r}
+
+# reading in the dataset
+#movies <- read.csv("/Users/lucrieffel/Desktop/MGSC 310/MGSC 310/final-project/Movies_dataset.csv")
+movies <- read.csv("/Users/michellezhang/Documents/CPSC_Courses/MGSC310/exams/movies.csv")
+
+movies %>% glimpse()
+
+#Note, we will need to clean the Genre column, runtime column, and Release Date column
+#We can also drop the Title column ,and the Movie.info column. 
+#Assuming that the dataset is ordered/ranked we may be able to use the X column to show the ranking of the film
+
+```
+
+
+```{r}
+
+summary(movies)
+
+#we need to modify a lot of columns to clean our dataset and build models
+
+```
+
+## Data Cleaning
+
+
+```{r}
+
+movies <- movies %>% drop_na()
+#select relevant predictor columns only
+movies <- movies %>% select(c(Certification, Release_Date, Language, Budget, Revenue, Runtime))
+#convert columns into appropriate data types
+movies$Revenue <- as.numeric(gsub('[$,]', '', movies$Revenue))
+movies$Budget <- as.numeric(gsub('[$,]', '', movies$Budget))
+movies <- movies %>%
+  mutate(rating = fct_lump(as_factor(Certification), 4, other_level = "Other")) %>% #save the modified column into a column called rating
+  mutate(rating = factor(rating)) %>% #factor rating column
+  mutate(Language = fct_lump(as_factor(Language), 4, other_level = "Other")) %>% 
+  select(-Certification)  %>% #drop the certification column 
+  mutate(profit = Revenue - Budget) %>% #create a profit column which is revenue - budget for each film 
+  drop_na() #drop na again to make sure all null values are dropped
+
+table(movies$rating)
+table(movies$Language)
+
+movies %>% head()
+
+```
+
+```{r}
+
+movies %>% summary()
+
+#all features are appropriately transformed for modeling
+
+```
+
+## Data Visualization
+
+```{r}
+
+#histogram with 20 bins of profit distribution of the dataset
+library(ggplot2)
+ggplot(movies, aes(x = profit)) + geom_histogram(bins = 20, color = "black") + labs(title = "Profit Histogram (20 bins)", x = "Profit($)", y = "Frequency") + theme_minimal()
+
+#histogram with distribtion of budget in the dataset
+ggplot(movies, aes(x = Budget)) + geom_histogram(bins = 20, color = "black")+ labs(title = "Budget Histogram (20 bins)", x = "Budget($)", y = "Frequency") + theme_minimal()
+
+#histogram with distribtion of revenue in the dataset
+ggplot(movies, aes(x = Revenue)) + geom_histogram(bins = 20, color = "black") + labs(title = "Revenue Histogram (20 bins)", x = "Revenue($)", y = "Frequency") + theme_minimal()
+
+table(movies$Language)
+table(movies$rating)
+
+```
+## Model 1: Linear Regression Model
+
+```{r}
+
+#split data into training and testing
+set.seed(310)
+movies_split <- initial_split(movies, prop = 0.7)
+movies_train <- training(movies_split)
+movies_test <- testing(movies_split)
+
+#model 1: linear regression predicting revenue with all above variables except release_date
+linear_model <- lm(profit  ~ relevel(Language,ref = "Other")  + Budget + Runtime + relevel(rating, ref = "Other"), data = movies_train)
+summary(linear_model)
+
+#generate predictions for plot
+preds_train <- predict(linear_model) # default: newdata = movies_train
+preds_test <- predict(linear_model, newdata = movies_test)
+df_model1 <- data.frame(Predicted = preds_train, Observed = movies_train$profit)
+df_model2 <- data.frame(Predicted = preds_test, Observed = movies_test$profit)
+
+ggplot(df_model1, aes(x = Predicted, y = Observed)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_minimal() +
+  labs(title = "Predicted Profit vs Actual Profit (Train Set)",
+       x = "Predicted Profit ($) ",
+       y = "Observed Profit ($)")
+
+ggplot(df_model2, aes(x = Predicted, y = Observed)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_minimal() +
+  labs(title = "Predicted Profit vs Actual Profit (Test Set)",
+       x = "Predicted Profit ($) ",
+       y = "Observed Profit ($)")
+
+#check for overfitting
+train_RMSE <- RMSE(preds_train, obs = movies_train$profit)
+test_RMSE <- RMSE(preds_test, obs = movies_test$profit)
+
+train_RMSE # 191148775
+test_RMSE # 200914204
+
+```
+
+## Model 2: Random Forest Model
+
+```{r}
+
+rf <- randomForest(profit ~ Language + Budget + Runtime + rating,
+                   data = movies_train,
+                   ntree = 500,
+                   mtry = 5, # because we have 5 predictors
+                   importance = TRUE)
+
+# printing results of random forest model
+print(rf)
+summary(rf)
+plot(rf)
+
+# making predictions and checking for overfitting
+preds_train <- predict(rf, movies_train)
+preds_test <- predict(rf, movies_test)
+train_RMSE <- RMSE(preds_train, movies_train$profit)
+test_RMSE <- RMSE(preds_test, movies_test$profit)
+
+train_RMSE # 109202440
+test_RMSE # 199242934
+
+# random forest plots
+importance(rf)
+varImpPlot(rf)
+plot_min_depth_distribution(rf)
+
+```
+
+```{r}
+
+mtrys <- 1:5
+mses <- NULL
+for(m in mtrys){
+  rf_cv <- randomForest(profit ~ Language + Budget + Runtime + rating,
+                        data = movies_train,
+                        mtry = m)
+  mses[m] <- round(mean(rf_cv$mse),5)
+  print(paste0("mtry value: ",m,", MSE:",mses[m]))
+}
+
+```
+
+```{r}
+
+# trying to combat the overfitting issue
+rf <- randomForest(profit ~ Language + Budget + Runtime + rating,
+                   data = movies_train,
+                   ntree = 500,
+                   mtry = 1, # mtry with the lowest MSE
+                   importance = TRUE)
+
+# printing results of random forest model
+print(rf)
+summary(rf)
+plot(rf)
+
+# making predictions and checking for overfitting
+preds_train <- predict(rf, movies_train)
+preds_test <- predict(rf, movies_test)
+train_RMSE <- RMSE(preds_train, movies_train$profit)
+test_RMSE <- RMSE(preds_test, movies_test$profit)
+
+train_RMSE # 180203525
+test_RMSE # 202552732
+
+```
